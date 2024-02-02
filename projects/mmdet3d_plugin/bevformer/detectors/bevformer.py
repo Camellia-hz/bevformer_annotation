@@ -247,7 +247,7 @@ class BEVFormer(MVXTwoStageDetector):
         self.prev_frame_info['scene_token'] = img_metas[0][0]['scene_token']
 
         # do not use temporal information
-        if not self.video_test_mode:
+        if not self.video_test_mode:  # self.video_test_mode == true
             self.prev_frame_info['prev_bev'] = None
 
         # Get the delta of ego position and angle between two timestamps.
