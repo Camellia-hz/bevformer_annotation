@@ -1,7 +1,7 @@
 # BEvFormer-small consumes at lease 10500M GPU memory
 # compared to bevformer_base, bevformer_small has
 # smaller BEV: 200*200 -> 150*150
-# less encoder layers: 6 -> 3
+# in this small version, it has 1*encoder layers
 # smaller input size: 1600*900 -> (1600*900)*0.8
 # multi-scale feautres -> single scale features (C5)
 # with_cp of backbone = True
@@ -85,7 +85,7 @@ model = dict(
             embed_dims=_dim_,
             encoder=dict(
                 type='BEVFormerEncoder',
-                num_layers=3,
+                num_layers=1,
                 pc_range=point_cloud_range,
                 num_points_in_pillar=4,
                 return_intermediate=False,
@@ -206,7 +206,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=2,
+    samples_per_gpu=1,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
