@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-
+set -x
 CONFIG=$1
 CHECKPOINT=$2
 GPUS=$3

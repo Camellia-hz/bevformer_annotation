@@ -196,7 +196,7 @@ def main():
     dataset = build_dataset(cfg.data.test)
     data_loader = build_dataloader(
         dataset,
-        samples_per_gpu=samples_per_gpu,
+        samples_per_gpu=samples_per_gpu,   # 1
         workers_per_gpu=cfg.data.workers_per_gpu,
         dist=distributed,
         shuffle=False,
@@ -234,7 +234,7 @@ def main():
             model.cuda(),
             device_ids=[torch.cuda.current_device()],
             broadcast_buffers=False)
-        outputs = custom_multi_gpu_test(model, data_loader, args.tmpdir,
+        outputs = custom_multi_gpu_test(model, data_loader, args.tmpdir,  # outputs所有验证samples的预测结果
                                         args.gpu_collect)
 
     rank, _ = get_dist_info()
