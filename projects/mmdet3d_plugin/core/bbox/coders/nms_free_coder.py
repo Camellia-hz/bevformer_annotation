@@ -52,12 +52,12 @@ class NMSFreeCoder(BaseBBoxCoder):
         max_num = self.max_num
 
         cls_scores = cls_scores.sigmoid()
-        scores, indexs = cls_scores.view(-1).topk(max_num)
+        scores, indexs = cls_scores.view(-1).topk(max_num)  # 取前max_num个置信度最高的预测结果 torch.Size([900, 10])--> 9000  topk300 index%10
         labels = indexs % self.num_classes
         bbox_index = indexs // self.num_classes
-        bbox_preds = bbox_preds[bbox_index]
+        bbox_preds = bbox_preds[bbox_index]  # 取topk个预测的bbox属性 bbox_preds: (cx, cy, w, l, cz, h, rot_sine, rot_cosine, vx, vy)
        
-        final_box_preds = denormalize_bbox(bbox_preds, self.pc_range)   
+        final_box_preds = denormalize_bbox(bbox_preds, self.pc_range)    # final_box_preds： [cx, cy, cz, w, l, h, rot, vx, vy]  cx, cy, cz均在3D空间中
         final_scores = scores 
         final_preds = labels 
 
@@ -111,7 +111,7 @@ class NMSFreeCoder(BaseBBoxCoder):
         Returns:
             list[dict]: Decoded boxes.
         """
-        all_cls_scores = preds_dicts['all_cls_scores'][-1]
+        all_cls_scores = preds_dicts['all_cls_scores'][-1]  # 在decoder layers中, 六层layers均有预测的结果, test时只要最后一层的结果
         all_bbox_preds = preds_dicts['all_bbox_preds'][-1]
         
         batch_size = all_cls_scores.size()[0]

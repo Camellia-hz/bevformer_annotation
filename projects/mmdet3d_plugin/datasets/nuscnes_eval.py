@@ -572,7 +572,7 @@ class NuScenesEval_custom(NuScenesEval):
             print('Filtering ground truth annotations')
         self.gt_boxes = filter_eval_boxes(nusc, self.gt_boxes, self.cfg.class_range, verbose=verbose)
 
-        if self.overlap_test:
+        if self.overlap_test:  # False
             self.pred_boxes = filter_eval_boxes_by_overlap(self.nusc, self.pred_boxes)
 
             self.gt_boxes = filter_eval_boxes_by_overlap(self.nusc, self.gt_boxes, verbose=True)
@@ -638,7 +638,7 @@ class NuScenesEval_custom(NuScenesEval):
         # print(self.cfg.dist_fcn_callable, self.cfg.dist_ths)
         # self.cfg.dist_ths = [0.3]
         # self.cfg.dist_fcn_callable
-        for class_name in self.cfg.class_names:
+        for class_name in self.cfg.class_names:  # Accumulate metric data for all classes and distance thresholds.
             for dist_th in self.cfg.dist_ths:
                 md = accumulate(self.gt_boxes, self.pred_boxes, class_name, self.cfg.dist_fcn_callable, dist_th)
                 metric_data_list.set(class_name, dist_th, md)

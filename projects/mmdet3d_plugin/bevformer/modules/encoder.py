@@ -106,7 +106,7 @@ class BEVFormerEncoder(TransformerLayerSequence):
         reference_points[..., 2:3] = reference_points[..., 2:3] * \
             (pc_range[5] - pc_range[2]) + pc_range[2]
 
-        reference_points = torch.cat(
+        reference_points = torch.cat( # torch.Size([2, 4, 22500, 4])
             (reference_points, torch.ones_like(reference_points[..., :1])), -1)
 
         reference_points = reference_points.permute(1, 0, 2, 3)
@@ -117,9 +117,9 @@ class BEVFormerEncoder(TransformerLayerSequence):
             D, B, 1, num_query, 4).repeat(1, 1, num_cam, 1, 1).unsqueeze(-1)
 
         lidar2img = lidar2img.view(
-            1, B, num_cam, 1, 4, 4).repeat(D, 1, 1, num_query, 1, 1)
+            1, B, num_cam, 1, 4, 4).repeat(D, 1, 1, num_query, 1, 1)  # torch.Size([4, 2, 6, 22500, 4, 4])
 
-        reference_points_cam = torch.matmul(lidar2img.to(torch.float32),
+        reference_points_cam = torch.matmul(lidar2img.to(torch.float32), # 将3D space中的reference_points投影到cam上
                                             reference_points.to(torch.float32)).squeeze(-1)
         eps = 1e-5
 
@@ -130,7 +130,7 @@ class BEVFormerEncoder(TransformerLayerSequence):
         reference_points_cam[..., 0] /= img_metas[0]['img_shape'][0][1]
         reference_points_cam[..., 1] /= img_metas[0]['img_shape'][0][0]
 
-        bev_mask = (bev_mask & (reference_points_cam[..., 1:2] > 0.0)
+        bev_mask = (bev_mask & (reference_points_cam[..., 1:2] > 0.0)  # 先将投影点归一化到{0, 1}, 然后过滤
                     & (reference_points_cam[..., 1:2] < 1.0)
                     & (reference_points_cam[..., 0:1] < 1.0)
                     & (reference_points_cam[..., 0:1] > 0.0))
@@ -140,8 +140,8 @@ class BEVFormerEncoder(TransformerLayerSequence):
             bev_mask = bev_mask.new_tensor(
                 np.nan_to_num(bev_mask.cpu().numpy()))
 
-        reference_points_cam = reference_points_cam.permute(2, 1, 3, 0, 4)
-        bev_mask = bev_mask.permute(2, 1, 3, 0, 4).squeeze(-1)
+        reference_points_cam = reference_points_cam.permute(2, 1, 3, 0, 4) # torch.Size([6=num_cams, 2=BS, 22500=num_query, 4=高度上的四个点, 2])
+        bev_mask = bev_mask.permute(2, 1, 3, 0, 4).squeeze(-1)  # torch.Size([6, 2, 22500, 4])
 
         torch.backends.cuda.matmul.allow_tf32 = allow_tf32
         torch.backends.cudnn.allow_tf32 = allow_tf32
@@ -182,15 +182,15 @@ class BEVFormerEncoder(TransformerLayerSequence):
                 [num_layers, num_query, bs, embed_dims].
         """
 
-        output = bev_query
+        output = bev_query # torch.Size([22500, 2, 256])
         intermediate = []
 
-        ref_3d = self.get_reference_points(
+        ref_3d = self.get_reference_points(  # 在z轴上lift 4个点, bev grid构造150*150个点, 形成3D point, 送入到后面的SCA模块中提取img feat, torch.Size([2, 4, 22500, 3])
             bev_h, bev_w, self.pc_range[5]-self.pc_range[2], self.num_points_in_pillar, dim='3d', bs=bev_query.size(1),  device=bev_query.device, dtype=bev_query.dtype)
-        ref_2d = self.get_reference_points(
+        ref_2d = self.get_reference_points(  # torch.Size([2, 22500, 1, 2])
             bev_h, bev_w, dim='2d', bs=bev_query.size(1), device=bev_query.device, dtype=bev_query.dtype)
 
-        reference_points_cam, bev_mask = self.point_sampling(
+        reference_points_cam, bev_mask = self.point_sampling(  # 
             ref_3d, self.pc_range, kwargs['img_metas'])
 
         # bug: this code should be 'shift_ref_2d = ref_2d.clone()', we keep this bug for reproducing our results in paper.
@@ -203,21 +203,21 @@ class BEVFormerEncoder(TransformerLayerSequence):
         bs, len_bev, num_bev_level, _ = ref_2d.shape
         if prev_bev is not None:
             prev_bev = prev_bev.permute(1, 0, 2)
-            prev_bev = torch.stack(
+            prev_bev = torch.stack(  # 有 prev bev时, 用prev bev + cur bev作为value
                 [prev_bev, bev_query], 1).reshape(bs*2, len_bev, -1)
-            hybird_ref_2d = torch.stack([shift_ref_2d, ref_2d], 1).reshape(
+            hybird_ref_2d = torch.stack([shift_ref_2d, ref_2d], 1).reshape(  # 有prev_bev, 则此时需要完成前一帧的bev到当前帧bev网格坐标的对齐: shift_ref_2d, 然后与当前帧的ref_2d cat
                 bs*2, len_bev, num_bev_level, 2)
         else:
-            hybird_ref_2d = torch.stack([ref_2d, ref_2d], 1).reshape(
+            hybird_ref_2d = torch.stack([ref_2d, ref_2d], 1).reshape( # 如果prev_bev没有, 即第一帧, 此时没有待融合的历史bev特征, 因此使用当前的bev query作为历史帧, 因此历史帧相对于当前帧的bev网格坐标与当前帧是一致的  torch.Size([4(B*2, 即每个Batch都有历史帧与当前帧的bev grid), 22500, 1, 2])
                 bs*2, len_bev, num_bev_level, 2)
 
-        for lid, layer in enumerate(self.layers):
+        for lid, layer in enumerate(self.layers):  # TSA + SCA + FFN: class BEVFormerLayer
             output = layer(
-                bev_query,
-                key,
-                value,
+                bev_query,  # torch.Size([2, 22500, 256])
+                key, # torch.Size([6, 920, 2, 256]) key == value
+                value, # img feat flatten torch.Size([6, 920, 2, 256]) SCA模块
                 *args,
-                bev_pos=bev_pos,
+                bev_pos=bev_pos,  # torch.Size([2, 22500, 256]) 已经完成编码
                 ref_2d=hybird_ref_2d,
                 ref_3d=ref_3d,
                 bev_h=bev_h,
@@ -226,10 +226,10 @@ class BEVFormerEncoder(TransformerLayerSequence):
                 level_start_index=level_start_index,
                 reference_points_cam=reference_points_cam,
                 bev_mask=bev_mask,
-                prev_bev=prev_bev,
+                prev_bev=prev_bev,  # TSA需要用到历史的bev query
                 **kwargs)
 
-            bev_query = output
+            bev_query = output  # bev query在每个TSA等模块间完成更新
             if self.return_intermediate:
                 intermediate.append(output)
 
@@ -353,20 +353,19 @@ class BEVFormerLayer(MyCustomBaseTransformerLayer):
                                                      f'to the number of attention in ' \
                 f'operation_order {self.num_attn}'
 
-        for layer in self.operation_order:
+        for layer in self.operation_order: # 一个encoder中的所有操作, self attn(TSA), cross attn(SCA), ffn, norm
             # temporal self attention
-            if layer == 'self_attn':
-
-                query = self.attentions[attn_index](
+            if layer == 'self_attn': 
+                query = self.attentions[attn_index](  # 每个self.attentions在父类中定义, 包含一个TSA+SCA+FFN, 也就是一层的encoder结构
                     query,
-                    prev_bev,
+                    prev_bev, # 对于TSA来说, k, v是历史帧bev feat
                     prev_bev,
                     identity if self.pre_norm else None,
-                    query_pos=bev_pos,
+                    query_pos=bev_pos, # torch.Size([2, 22500, 256])
                     key_pos=bev_pos,
                     attn_mask=attn_masks[attn_index],
                     key_padding_mask=query_key_padding_mask,
-                    reference_points=ref_2d,
+                    reference_points=ref_2d,  # torch.Size([4, 22500, 1, 2])
                     spatial_shapes=torch.tensor(
                         [[bev_h, bev_w]], device=query.device),
                     level_start_index=torch.tensor([0], device=query.device),
@@ -382,7 +381,7 @@ class BEVFormerLayer(MyCustomBaseTransformerLayer):
             elif layer == 'cross_attn':
                 query = self.attentions[attn_index](
                     query,
-                    key,
+                    key, # image feat flatten
                     value,
                     identity if self.pre_norm else None,
                     query_pos=query_pos,

@@ -147,14 +147,14 @@ class SpatialCrossAttention(BaseModule):
             [bs, self.num_cams, max_len, D, 2])
         
         for j in range(bs):
-            for i, reference_points_per_img in enumerate(reference_points_cam):   
-                index_query_per_img = indexes[i]
+            for i, reference_points_per_img in enumerate(reference_points_cam):  # torch.Size([6, 2, 22500, 4, 2]) --> i:0-5, reference_points_per_img: torch.Size([2, 22500, 4, 2])
+                index_query_per_img = indexes[i]  # 能投影到当前cam的bev query数量
                 queries_rebatch[j, i, :len(index_query_per_img)] = query[j, index_query_per_img]
                 reference_points_rebatch[j, i, :len(index_query_per_img)] = reference_points_per_img[j, index_query_per_img]
 
         num_cams, l, bs, embed_dims = key.shape
 
-        key = key.permute(2, 0, 1, 3).reshape(
+        key = key.permute(2, 0, 1, 3).reshape( # torch.Size([12, 920, 256])
             bs * self.num_cams, l, self.embed_dims)
         value = value.permute(2, 0, 1, 3).reshape(
             bs * self.num_cams, l, self.embed_dims)
@@ -163,13 +163,13 @@ class SpatialCrossAttention(BaseModule):
                                             reference_points=reference_points_rebatch.view(bs*self.num_cams, max_len, D, 2), spatial_shapes=spatial_shapes,
                                             level_start_index=level_start_index).view(bs, self.num_cams, max_len, self.embed_dims)
         for j in range(bs):
-            for i, index_query_per_img in enumerate(indexes):
-                slots[j, index_query_per_img] += queries[j, i, :len(index_query_per_img)]
+            for i, index_query_per_img in enumerate(indexes): # index_query_per_img每个cam上有效的query index
+                slots[j, index_query_per_img] += queries[j, i, :len(index_query_per_img)]  # sum 六个cam的信息
 
-        count = bev_mask.sum(-1) > 0
-        count = count.permute(1, 2, 0).sum(-1)
+        count = bev_mask.sum(-1) > 0  # torch.Size([6, 2, 22500, 4]) --> torch.Size([6, 2, 22500])求出每一个bev query在cam上是否有投影
+        count = count.permute(1, 2, 0).sum(-1) # 计算在六个cam上有投影点的相机数量
         count = torch.clamp(count, min=1.0)
-        slots = slots / count[..., None]
+        slots = slots / count[..., None] # 特征求平均
         slots = self.output_proj(slots)
 
         return self.dropout(slots) + inp_residual

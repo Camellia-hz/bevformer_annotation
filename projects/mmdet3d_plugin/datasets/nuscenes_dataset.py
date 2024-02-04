@@ -24,7 +24,7 @@ class CustomNuScenesDataset(NuScenesDataset):
 
     def __init__(self, queue_length=4, bev_size=(200, 200), overlap_test=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.queue_length = queue_length
+        self.queue_length = queue_length  # train 3, test 4
         self.overlap_test = overlap_test
         self.bev_size = bev_size
         
@@ -219,9 +219,9 @@ class CustomNuScenesDataset(NuScenesDataset):
             overlap_test=self.overlap_test,
             data_infos=self.data_infos
         )
-        self.nusc_eval.main(plot_examples=0, render_curves=False)
+        self.nusc_eval.main(plot_examples=0, render_curves=False)  # 生成评价指标文件
         # record metrics
-        metrics = mmcv.load(osp.join(output_dir, 'metrics_summary.json'))
+        metrics = mmcv.load(osp.join(output_dir, 'metrics_summary.json'))  # 读出已经生成的评价指标文件.
         detail = dict()
         metric_prefix = f'{result_name}_NuScenes'
         for name in self.CLASSES:

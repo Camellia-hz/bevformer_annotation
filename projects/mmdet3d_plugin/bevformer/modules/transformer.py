@@ -116,11 +116,11 @@ class PerceptionTransformer(BaseModule):
         """
 
         bs = mlvl_feats[0].size(0)
-        bev_queries = bev_queries.unsqueeze(1).repeat(1, bs, 1)
-        bev_pos = bev_pos.flatten(2).permute(2, 0, 1)
+        bev_queries = bev_queries.unsqueeze(1).repeat(1, bs, 1) # torch.Size([22500, 256])--> torch.Size([22500, 2, 256]), 由于有batch帧, 每一帧都得初始化bev query
+        bev_pos = bev_pos.flatten(2).permute(2, 0, 1)  # torch.Size([2, 256, 150, 150]) --> torch.Size([22500, 2, 256]), 匹配bev query的维度
 
         # obtain rotation angle and shift with ego motion
-        delta_x = np.array([each['can_bus'][0]
+        delta_x = np.array([each['can_bus'][0]  # 当为时序融合的第一帧时, 此时不包含偏移量, 即不需要完成prev_bev到当前帧的bev_pos的对齐(bev_pos是以当前帧的自车为center建立bev网格坐标)
                            for each in kwargs['img_metas']])
         delta_y = np.array([each['can_bus'][1]
                            for each in kwargs['img_metas']])
@@ -142,7 +142,7 @@ class PerceptionTransformer(BaseModule):
 
         if prev_bev is not None:
             if prev_bev.shape[1] == bev_h * bev_w:
-                prev_bev = prev_bev.permute(1, 0, 2)
+                prev_bev = prev_bev.permute(1, 0, 2) # torch.Size([22500, 2, 256])
             if self.rotate_prev_bev:
                 for i in range(bs):
                     # num_prev_bev = prev_bev.size(1)
@@ -155,7 +155,7 @@ class PerceptionTransformer(BaseModule):
                         bev_h * bev_w, 1, -1)
                     prev_bev[:, i] = tmp_prev_bev[:, 0]
 
-        # add can bus signals
+        # add can bus signals 加入不同batch的自车运动的信息, 将其通过mlp编码, 然后与初始的bev query相加 torch.Size([2, 18])
         can_bus = bev_queries.new_tensor(
             [each['can_bus'] for each in kwargs['img_metas']])  # [:, :]
         can_bus = self.can_bus_mlp(can_bus)[None, :, :]
@@ -163,18 +163,18 @@ class PerceptionTransformer(BaseModule):
 
         feat_flatten = []
         spatial_shapes = []
-        for lvl, feat in enumerate(mlvl_feats):
+        for lvl, feat in enumerate(mlvl_feats):  # 本意是来源于img neck的多尺度特征, 以list存储
             bs, num_cam, c, h, w = feat.shape
             spatial_shape = (h, w)
-            feat = feat.flatten(3).permute(1, 0, 3, 2)
+            feat = feat.flatten(3).permute(1, 0, 3, 2)  # torch.Size([2, 6, 256, 23, 40])--> torch.Size([6, 2, 920, 256]) 将img feature 按照hw拉伸成token的形式
             if self.use_cams_embeds:
-                feat = feat + self.cams_embeds[:, None, None, :].to(feat.dtype)
-            feat = feat + self.level_embeds[None,
+                feat = feat + self.cams_embeds[:, None, None, :].to(feat.dtype)  # self.cams_embeds 可学习参数, img feat的位置编码特征
+            feat = feat + self.level_embeds[None,  # 也是可学习参数, 针对不同尺度的生成的可学习参数  torch.Size([4, 256])
                                             None, lvl:lvl + 1, :].to(feat.dtype)
             spatial_shapes.append(spatial_shape)
             feat_flatten.append(feat)
 
-        feat_flatten = torch.cat(feat_flatten, 2)
+        feat_flatten = torch.cat(feat_flatten, 2)  # 将所有尺度的img feat形成的token在(H_i*W_i)维度即数量维度上cat到一起
         spatial_shapes = torch.as_tensor(
             spatial_shapes, dtype=torch.long, device=bev_pos.device)
         level_start_index = torch.cat((spatial_shapes.new_zeros(
@@ -184,20 +184,20 @@ class PerceptionTransformer(BaseModule):
             0, 2, 1, 3)  # (num_cam, H*W, bs, embed_dims)
 
         bev_embed = self.encoder(
-            bev_queries,
-            feat_flatten,
-            feat_flatten,
-            bev_h=bev_h,
-            bev_w=bev_w,
-            bev_pos=bev_pos,
-            spatial_shapes=spatial_shapes,
-            level_start_index=level_start_index,
-            prev_bev=prev_bev,
-            shift=shift,
+            bev_queries,  # torch.Size([22500=(bev_h * bev_w), 2, 256])  query
+            feat_flatten, # torch.Size([6, 920(sum(h_i*w_i)), 2=BS, 256])  K
+            feat_flatten, # V
+            bev_h=bev_h,  # 150
+            bev_w=bev_w,  # 150
+            bev_pos=bev_pos,  # torch.Size([22500, 2, 256])
+            spatial_shapes=spatial_shapes, # 各尺度特征的hw
+            level_start_index=level_start_index, # 
+            prev_bev=prev_bev, # 是否有前一帧bev信息
+            shift=shift,  # 当有前一帧信息时, 需要通过自车偏移(shift)与当前bev对齐
             **kwargs
         )
 
-        return bev_embed
+        return bev_embed # torch.Size([2=BS, 22500=H*W, 256])
 
     @auto_fp16(apply_to=('mlvl_feats', 'bev_queries', 'object_query_embed', 'prev_bev', 'bev_pos'))
     def forward(self,
@@ -261,29 +261,29 @@ class PerceptionTransformer(BaseModule):
 
         bs = mlvl_feats[0].size(0)
         query_pos, query = torch.split(
-            object_query_embed, self.embed_dims, dim=1)
-        query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)
+            object_query_embed, self.embed_dims, dim=1)  # torch.Size([900, 512])-->torch.Size([900, 256]), torch.Size([900, 256]) 一分为二, 分别作为位置编码信息和query
+        query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1) # torch.Size([2, 900, 256])
         query = query.unsqueeze(0).expand(bs, -1, -1)
-        reference_points = self.reference_points(query_pos)
+        reference_points = self.reference_points(query_pos) # DETR中的idea, 由预定义的query_pos去初始化为3D space中的参考点
         reference_points = reference_points.sigmoid()
-        init_reference_out = reference_points
+        init_reference_out = reference_points  # torch.Size([2, 900, 3]) 900个待检测 objects的center point
 
-        query = query.permute(1, 0, 2)
-        query_pos = query_pos.permute(1, 0, 2)
+        query = query.permute(1, 0, 2) # torch.Size([900, 2, 256])
+        query_pos = query_pos.permute(1, 0, 2) # torch.Size([900, 2, 256])
         bev_embed = bev_embed.permute(1, 0, 2)
 
-        inter_states, inter_references = self.decoder(
+        inter_states, inter_references = self.decoder( # decoder由多层DetrTransformerDecoderLayer堆叠而成
             query=query,
             key=None,
-            value=bev_embed,
+            value=bev_embed,  # torch.Size([22500, 2, 256]) 更新完成的cur bev feature
             query_pos=query_pos,
             reference_points=reference_points,
-            reg_branches=reg_branches,
-            cls_branches=cls_branches,
+            reg_branches=reg_branches, # 由多个linear块(linear + relu + linear + relu + linear(256-->10))组成, 对应了每个decoder层, 因为每个decoder layer都需要进行预测box信息, 然后更新送入到下一层的query pos等信息, 但是不参与loss的计算
+            cls_branches=cls_branches, # 在DETR的decoder layer中, 只需要reg branch更新box的信息, 不需要执行分类, 等object query更新完成后再进行最终的reg和cls
             spatial_shapes=torch.tensor([[bev_h, bev_w]], device=query.device),
             level_start_index=torch.tensor([0], device=query.device),
             **kwargs)
 
         inter_references_out = inter_references
 
-        return bev_embed, inter_states, init_reference_out, inter_references_out
+        return bev_embed, inter_states, init_reference_out, inter_references_out # bev_embed: bev feature [22500(h*w), 2=B, 256], inter_states: 6*decoder layer results: [6, 900, 2, 256], inter_references_out:[6, 2, 900, 3] 

@@ -174,16 +174,16 @@ class TemporalSelfAttention(BaseModule):
              Tensor: forwarded results with shape [num_query, bs, embed_dims].
         """
 
-        if value is None:
-            assert self.batch_first
-            bs, len_bev, c = query.shape
+        if value is None:  # 如果没有prev bev feat, 即第一帧B_t-2, 就让value等于当前bev stack两倍, 在TSA模块中, value实际上是prev bev + current bev
+            assert self.batch_first 
+            bs, len_bev, c = query.shape # torch.Size([2, 22500, 256])
             value = torch.stack([query, query], 1).reshape(bs*2, len_bev, c)
 
             # value = torch.cat([query, query], 0)
 
         if identity is None:
             identity = query
-        if query_pos is not None:
+        if query_pos is not None: # position information
             query = query + query_pos
         if not self.batch_first:
             # change to (bs, num_query ,embed_dims)
@@ -194,20 +194,20 @@ class TemporalSelfAttention(BaseModule):
         assert (spatial_shapes[:, 0] * spatial_shapes[:, 1]).sum() == num_value
         assert self.num_bev_queue == 2
 
-        query = torch.cat([value[:bs], query], -1)
-        value = self.value_proj(value)
+        query = torch.cat([value[:bs], query], -1) # prev bev与current bev在特征上cat: torch.Size([2, 22500, 512])
+        value = self.value_proj(value) # torch.Size([4, 22500, 256])--linear: torch.Size([4, 22500, 256])
 
         if key_padding_mask is not None:
             value = value.masked_fill(key_padding_mask[..., None], 0.0)
 
-        value = value.reshape(bs*self.num_bev_queue,
+        value = value.reshape(bs*self.num_bev_queue, # torch.Size([4, 22500, 8, 32]) multi head
                               num_value, self.num_heads, -1)
 
-        sampling_offsets = self.sampling_offsets(query)
+        sampling_offsets = self.sampling_offsets(query) # 可变形attention: 通过query预测一组基于采样点的offset  torch.Size([2, 22500, 128])
         sampling_offsets = sampling_offsets.view(
-            bs, num_query, self.num_heads,  self.num_bev_queue, self.num_levels, self.num_points, 2)
+            bs, num_query, self.num_heads,  self.num_bev_queue, self.num_levels, self.num_points, 2) # torch.Size([2, 22500, 8, 2(针对prev bev和cur bev都预测offset进行分别在不同的bev上采样), 1, 4, 2]) 每个bev query预测四个点
         attention_weights = self.attention_weights(query).view(
-            bs, num_query,  self.num_heads, self.num_bev_queue, self.num_levels * self.num_points)
+            bs, num_query,  self.num_heads, self.num_bev_queue, self.num_levels * self.num_points) # torch.Size([2, 22500, 8, 2, 4]) 每个点的weight
         attention_weights = attention_weights.softmax(-1)
 
         attention_weights = attention_weights.view(bs, num_query,
@@ -217,7 +217,7 @@ class TemporalSelfAttention(BaseModule):
                                                    self.num_points)
 
         attention_weights = attention_weights.permute(0, 3, 1, 2, 4, 5)\
-            .reshape(bs*self.num_bev_queue, num_query, self.num_heads, self.num_levels, self.num_points).contiguous()
+            .reshape(bs*self.num_bev_queue, num_query, self.num_heads, self.num_levels, self.num_points).contiguous()  # torch.Size([4, 22500, 8, 1, 4])
         sampling_offsets = sampling_offsets.permute(0, 3, 1, 2, 4, 5, 6)\
             .reshape(bs*self.num_bev_queue, num_query, self.num_heads, self.num_levels, self.num_points, 2)
 
@@ -244,7 +244,7 @@ class TemporalSelfAttention(BaseModule):
                 MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
             else:
                 MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
-            output = MultiScaleDeformableAttnFunction.apply(
+            output = MultiScaleDeformableAttnFunction.apply(  # torch.Size([4, 22500, 256])
                 value, spatial_shapes, level_start_index, sampling_locations,
                 attention_weights, self.im2col_step)
         else:
@@ -259,7 +259,7 @@ class TemporalSelfAttention(BaseModule):
         # fuse history value and current value
         # (num_query, embed_dims, bs*num_bev_queue)-> (num_query, embed_dims, bs, num_bev_queue)
         output = output.view(num_query, embed_dims, bs, self.num_bev_queue)
-        output = output.mean(-1)
+        output = output.mean(-1)  # prev bev cur bev mean
 
         # (num_query, embed_dims, bs)-> (bs, num_query, embed_dims)
         output = output.permute(2, 0, 1)
@@ -269,4 +269,4 @@ class TemporalSelfAttention(BaseModule):
         if not self.batch_first:
             output = output.permute(1, 0, 2)
 
-        return self.dropout(output) + identity
+        return self.dropout(output) + identity  # short cut

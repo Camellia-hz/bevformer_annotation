@@ -82,8 +82,8 @@ class GridMask(nn.Module):
     def set_prob(self, epoch, max_epoch):
         self.prob = self.st_prob * epoch / max_epoch #+ 1.#0.5
     @auto_fp16()
-    def forward(self, x):
-        if np.random.rand() > self.prob or not self.training:
+    def forward(self, x):  # x: 传进来的是尚未提取特征的原始img: torch.Size([24, 3, 736, 1280])
+        if np.random.rand() > self.prob or not self.training:  # true
             return x
         n,c,h,w = x.size()
         x = x.view(-1,h,w)

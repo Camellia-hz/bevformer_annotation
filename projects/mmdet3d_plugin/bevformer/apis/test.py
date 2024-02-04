@@ -67,9 +67,9 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
         prog_bar = mmcv.ProgressBar(len(dataset))
     time.sleep(2)  # This line can prevent deadlock problem in some cases.
     have_mask = False
-    for i, data in enumerate(data_loader):
+    for i, data in enumerate(data_loader):  # BS = 1
         with torch.no_grad():
-            result = model(return_loss=False, rescale=True, **data)
+            result = model(return_loss=False, rescale=True, **data)  # return pre result
             # encode mask results
             if isinstance(result, dict):
                 if 'bbox_results' in result.keys():
@@ -82,7 +82,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                     have_mask = True
             else:
                 batch_size = len(result)
-                bbox_results.extend(result)
+                bbox_results.extend(result)  # data_loader中以BS=1遍历所有需要test/val的samples, 然后针对每一帧生成预测, 解码等后处理操作将得到的结果result放到bbox_results列表中
 
             #if isinstance(result[0], tuple):
             #    assert False, 'this code is for instance segmentation, which our code will not utilize.'

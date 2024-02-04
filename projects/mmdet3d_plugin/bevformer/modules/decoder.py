@@ -90,42 +90,45 @@ class DetectionTransformerDecoder(TransformerLayerSequence):
         output = query
         intermediate = []
         intermediate_reference_points = []
-        for lid, layer in enumerate(self.layers):
+        
+        for lid, layer in enumerate(self.layers): # self.layers由六个DetrTransformerDecoderLayer组成, 每个layer包含multiheadattention & CustomMSDeformableAttention & FFN
 
-            reference_points_input = reference_points[..., :2].unsqueeze(
-                2)  # BS NUM_QUERY NUM_LEVEL 2
+            reference_points_input = reference_points[..., :2].unsqueeze(  # 在bevformer中, 不像detr3d需要将3D point投影到img上提取img特征, 因为已经有了再3D space中的bev feat,
+                2)  # BS NUM_QUERY NUM_LEVEL 2 torch.Size([2, 900, 1, 2])  # 因此我们只需要object query的xy作为center坐标, 然后预测offset完成deformableattention
+            
             output = layer(
                 output,
                 *args,
                 reference_points=reference_points_input,
                 key_padding_mask=key_padding_mask,
-                **kwargs)
-            output = output.permute(1, 0, 2)
+                **kwargs) # kwargs: include key(none), value(bev feature):torch.Size([22500, 2, 256]), query pos:torch.Size([900, 2, 256])
+            output = output.permute(1, 0, 2)  # torch.Size([2, 900, 256])
 
             if reg_branches is not None:
-                tmp = reg_branches[lid](output)
+                
+                tmp = reg_branches[lid](output) # 使用每一层对应的reg branch对输出进行reg, 得到box属性(torch.Size([2, 900, 10])), 然后更新reference points的坐标
 
                 assert reference_points.shape[-1] == 3
 
                 new_reference_points = torch.zeros_like(reference_points)
-                new_reference_points[..., :2] = tmp[
+                new_reference_points[..., :2] = tmp[  # xy直接更新
                     ..., :2] + inverse_sigmoid(reference_points[..., :2])
-                new_reference_points[..., 2:3] = tmp[
+                new_reference_points[..., 2:3] = tmp[ # tmp: xyzwhl, rot, velo 用预测高度更新reference point的z
                     ..., 4:5] + inverse_sigmoid(reference_points[..., 2:3])
 
-                new_reference_points = new_reference_points.sigmoid()
+                new_reference_points = new_reference_points.sigmoid() # 最终得到新的object的3D center point
 
                 reference_points = new_reference_points.detach()
 
             output = output.permute(1, 0, 2)
-            if self.return_intermediate:
+            if self.return_intermediate:  # True, 保存每一个decoder layer更新的query and reference points
                 intermediate.append(output)
                 intermediate_reference_points.append(reference_points)
 
-        if self.return_intermediate:
+        if self.return_intermediate:  # return 六层 decoder layer的results
             return torch.stack(intermediate), torch.stack(
                 intermediate_reference_points)
-
+        
         return output, reference_points
 
 
@@ -285,8 +288,8 @@ class CustomMSDeformableAttention(BaseModule):
             query = query + query_pos
         if not self.batch_first:
             # change to (bs, num_query ,embed_dims)
-            query = query.permute(1, 0, 2)
-            value = value.permute(1, 0, 2)
+            query = query.permute(1, 0, 2) # torch.Size([2, 900, 256])
+            value = value.permute(1, 0, 2) # torch.Size([2, 22500(h*w), 256])
 
         bs, num_query, _ = query.shape
         bs, num_value, _ = value.shape
@@ -295,10 +298,10 @@ class CustomMSDeformableAttention(BaseModule):
         value = self.value_proj(value)
         if key_padding_mask is not None:
             value = value.masked_fill(key_padding_mask[..., None], 0.0)
-        value = value.view(bs, num_value, self.num_heads, -1)
+        value = value.view(bs, num_value, self.num_heads, -1)  # torch.Size([2, 22500, 8, 32]) multi head
 
         sampling_offsets = self.sampling_offsets(query).view(
-            bs, num_query, self.num_heads, self.num_levels, self.num_points, 2)
+            bs, num_query, self.num_heads, self.num_levels, self.num_points, 2)  # torch.Size([2, 900, 8, 1, 4, 2]) 针对待检测物体的object query生成offset
         attention_weights = self.attention_weights(query).view(
             bs, num_query, self.num_heads, self.num_levels * self.num_points)
         attention_weights = attention_weights.softmax(-1)
@@ -330,7 +333,7 @@ class CustomMSDeformableAttention(BaseModule):
             else:
                 MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
             output = MultiScaleDeformableAttnFunction.apply(
-                value, spatial_shapes, level_start_index, sampling_locations,
+                value, spatial_shapes, level_start_index, sampling_locations,  # object query 在 bev query上完成可变形注意力
                 attention_weights, self.im2col_step)
         else:
             output = multi_scale_deformable_attn_pytorch(

@@ -3,8 +3,9 @@
 # ---------------------------------------------
 #  Modified by Zhiqi Li
 # ---------------------------------------------
-
+import sys
 import torch
+import os
 from mmcv.runner import force_fp32, auto_fp16
 from mmdet.models import DETECTORS
 from mmdet3d.core import bbox3d2result
@@ -15,7 +16,7 @@ import copy
 import numpy as np
 import mmdet3d
 from projects.mmdet3d_plugin.models.utils.bricks import run_time
-
+from projects.mmdet3d_plugin.bevformer.detectors.log import Logger
 
 @DETECTORS.register_module()
 class BEVFormer(MVXTwoStageDetector):
@@ -55,7 +56,7 @@ class BEVFormer(MVXTwoStageDetector):
         self.fp16_enabled = False
 
         # temporal
-        self.video_test_mode = video_test_mode
+        self.video_test_mode = video_test_mode # true
         self.prev_frame_info = {
             'prev_bev': None,
             'scene_token': None,
@@ -66,7 +67,7 @@ class BEVFormer(MVXTwoStageDetector):
 
     def extract_img_feat(self, img, img_metas, len_queue=None):
         """Extract features of images."""
-        B = img.size(0)
+        B = img.size(0)  # 这里的 B---> (B * len_queue)
         if img is not None:
             
             # input_shape = img.shape[-2:]
@@ -78,23 +79,23 @@ class BEVFormer(MVXTwoStageDetector):
                 img.squeeze_()
             elif img.dim() == 5 and img.size(0) > 1:
                 B, N, C, H, W = img.size()
-                img = img.reshape(B * N, C, H, W)
+                img = img.reshape(B * N, C, H, W)  # torch.Size([24(B*len_queue*n_cam), 3, 736, 1280])
             if self.use_grid_mask:
                 img = self.grid_mask(img)
 
-            img_feats = self.img_backbone(img)
+            img_feats = self.img_backbone(img)  # ResNet img_feats: torch.Size([24, 2048, 23, 40])
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
         else:
             return None
         if self.with_img_neck:
-            img_feats = self.img_neck(img_feats)
+            img_feats = self.img_neck(img_feats) # torch.Size([24, 256, 23, 40])
 
         img_feats_reshaped = []
         for img_feat in img_feats:
             BN, C, H, W = img_feat.size()
             if len_queue is not None:
-                img_feats_reshaped.append(img_feat.view(int(B/len_queue), len_queue, int(BN / B), C, H, W))
+                img_feats_reshaped.append(img_feat.view(int(B/len_queue), len_queue, int(BN / B), C, H, W)) # 将维度还原回去: torch.Size([2=B, 2=history_len_queue, 6=n_cam, 256, 23, 40])
             else:
                 img_feats_reshaped.append(img_feat.view(B, int(BN / B), C, H, W))
         return img_feats_reshaped
@@ -105,7 +106,7 @@ class BEVFormer(MVXTwoStageDetector):
 
         img_feats = self.extract_img_feat(img, img_metas, len_queue=len_queue)
         
-        return img_feats
+        return img_feats # 对于history frame: torch.Size([2, 2, 6, 256, 23, 40]), 
 
 
     def forward_pts_train(self,
@@ -129,9 +130,9 @@ class BEVFormer(MVXTwoStageDetector):
         Returns:
             dict: Losses of each branch.
         """
-
-        outs = self.pts_bbox_head(
-            pts_feats, img_metas, prev_bev)
+        with torch.profiler.record_function("cur_pts_bbox_head"):
+            outs = self.pts_bbox_head(
+                pts_feats, img_metas, prev_bev)
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs, img_metas=img_metas)
         return losses
@@ -150,24 +151,24 @@ class BEVFormer(MVXTwoStageDetector):
         list[list[dict]]), with the outer list indicating test time
         augmentations.
         """
-        if return_loss:
+        if return_loss:  # train
             return self.forward_train(**kwargs)
         else:
-            return self.forward_test(**kwargs)
+            return self.forward_test(**kwargs)  # test/val
     
     def obtain_history_bev(self, imgs_queue, img_metas_list):
         """Obtain history BEV features iteratively. To save GPU memory, gradients are not calculated.
         """
         self.eval()
 
-        with torch.no_grad():
+        with torch.no_grad():  # 对于历史帧的bev特征提取, 不计算梯度, 不参与参数的更新
             prev_bev = None
-            bs, len_queue, num_cams, C, H, W = imgs_queue.shape
+            bs, len_queue, num_cams, C, H, W = imgs_queue.shape # torch.Size([2, 2, 6, 3, 736, 1280]) 
             imgs_queue = imgs_queue.reshape(bs*len_queue, num_cams, C, H, W)
             img_feats_list = self.extract_feat(img=imgs_queue, len_queue=len_queue)
             for i in range(len_queue):
-                img_metas = [each[i] for each in img_metas_list]
-                if not img_metas[0]['prev_bev_exists']:
+                img_metas = [each[i] for each in img_metas_list] # 不同batch中的同一个位置的历史帧, 比如第一个batch的第一个历史帧和第二个batch的第一个历史帧组成list
+                if not img_metas[0]['prev_bev_exists']: # 如果是第一个历史帧, 他前面是没有其他历史帧的
                     prev_bev = None
                 # img_feats = self.extract_feat(img=img, img_metas=img_metas)
                 img_feats = [each_scale[:, i] for each_scale in img_feats_list]
@@ -241,7 +242,7 @@ class BEVFormer(MVXTwoStageDetector):
         img = [img] if img is None else img
 
         if img_metas[0][0]['scene_token'] != self.prev_frame_info['scene_token']:
-            # the first sample of each scene is truncated
+            # the first sample of each scene is truncated 每个场景的第一帧前面没有历史帧, 不能融合时序信息
             self.prev_frame_info['prev_bev'] = None
         # update idx
         self.prev_frame_info['scene_token'] = img_metas[0][0]['scene_token']
@@ -260,7 +261,7 @@ class BEVFormer(MVXTwoStageDetector):
             img_metas[0][0]['can_bus'][-1] = 0
             img_metas[0][0]['can_bus'][:3] = 0
 
-        new_prev_bev, bbox_results = self.simple_test(
+        new_prev_bev, bbox_results = self.simple_test(  # 为每一帧预测得到结果后, 会返回预测的bbox以及当前帧的bev feat给new_prev_bev, 作为下一帧的时序融合信息.
             img_metas[0], img[0], prev_bev=self.prev_frame_info['prev_bev'], **kwargs)
         # During inference, we save the BEV features and ego motion of each timestamp.
         self.prev_frame_info['prev_pos'] = tmp_pos
@@ -270,9 +271,9 @@ class BEVFormer(MVXTwoStageDetector):
 
     def simple_test_pts(self, x, img_metas, prev_bev=None, rescale=False):
         """Test function"""
-        outs = self.pts_bbox_head(x, img_metas, prev_bev=prev_bev)
+        outs = self.pts_bbox_head(x, img_metas, prev_bev=prev_bev) # 结果的原始预测
 
-        bbox_list = self.pts_bbox_head.get_bboxes(
+        bbox_list = self.pts_bbox_head.get_bboxes(  # pred_dict --> pred_boxes
             outs, img_metas, rescale=rescale)
         bbox_results = [
             bbox3d2result(bboxes, scores, labels)
@@ -284,7 +285,7 @@ class BEVFormer(MVXTwoStageDetector):
         """Test function without augmentaiton."""
         img_feats = self.extract_feat(img=img, img_metas=img_metas)
 
-        bbox_list = [dict() for i in range(len(img_metas))]
+        bbox_list = [dict() for i in range(len(img_metas))]  # 定义BS个空字典
         new_prev_bev, bbox_pts = self.simple_test_pts(
             img_feats, img_metas, prev_bev, rescale=rescale)
         for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
